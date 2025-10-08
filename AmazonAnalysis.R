@@ -10,8 +10,10 @@ library(DataExplorer)
 library(corrplot)
 
 # Read in test and training data
-amazon <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/train.csv")
-testData <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/test.csv")
+amazon <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/train.csv") |>
+  mutate(ACTION = factor(ACTION))
+testData <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/test.csv") |>
+  mutate(Id = row_number())
 
 ##
 ### EDA
@@ -20,10 +22,6 @@ testData <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/test.csv")
 skim(amazon)
 glimpse(amazon)
 plot_histogram(amazon)
-
-amazon$ACTION <- as.factor(amazon$ACTION)
-amazon$ROLE_DEPTNAME <- as.factor(amazon$ROLE_DEPTNAME)
-
 
 ggplot(data = amazon) +
   geom_mosaic(aes(x = product(ROLE_DEPTNAME), fill = ACTION))
@@ -41,5 +39,34 @@ amazon_recipe <- recipe(ACTION ~ ., data = amazon) |>
   step_dummy(all_nominal_predictors())
 
 bake(prep(amazon_recipe), amazon)
+
+
+##
+### Logistic Regression
+##
+
+## Set Model
+logRegModel <- logistic_reg() |> 
+  set_engine("glm")
+
+## Set Workflow
+logReg_workflow <- workflow() |>
+  add_recipe(amazon_recipe) |>
+  add_model(logRegModel) |>
+  fit(data = amazon)
+
+## Prediction
+logistic_predictions <- predict(logReg_workflow,
+                                new_data = testData,
+                                type = "prob")
+
+## Kaggle Formatting
+kaggle_submission <- bind_cols(testData["Id"], logistic_predictions) |>
+  rename(Action = .pred_1) |>
+  select(Id, Action)
+           
+vroom_write(kaggle_submission,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/logistic_regression.csv",
+            delim = ",")
 
 
