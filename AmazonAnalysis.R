@@ -111,3 +111,90 @@ penalized_preds <- penalized_final_wf |>
 vroom_write(penalized_preds,
             file = "~/Documents/STAT 348/AmazonEmployeeAccess/penalized_logistic.csv",
             delim = ",")
+
+
+##
+### Random Forest
+##
+
+random_forest_mod <- rand_forest(mtry = tune(),
+                                 min_n = tune(),
+                                 trees = 500) |>
+  set_engine("ranger") |>
+  set_mode("classification")
+
+random_forest_wf <- workflow() |>
+  add_recipe(amazon_recipe) |>
+  add_model(random_forest_mod)
+
+random_forest_grid_of_tuning_params <- grid_regular(mtry(range = c(1, ncol(amazon) - 1)),
+                                                    min_n(),
+                                                    levels = 5)
+
+folds <- vfold_cv(amazon, v = 5, repeats = 1)
+
+random_forest_CV_results <- random_forest_wf |>
+  tune_grid(resamples = folds,
+            grid = random_forest_grid_of_tuning_params,
+            metrics = metric_set(roc_auc))
+
+random_forest_bestTune <- random_forest_CV_results |>
+  select_best(metric = "roc_auc")
+
+random_forest_final_wf <- random_forest_wf |>
+  finalize_workflow(random_forest_bestTune) |>
+  fit(data = amazon)
+
+random_forest_preds <- predict(random_forest_final_wf, new_data = testData)
+
+random_forest_preds <- random_forest_final_wf |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(random_forest_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest.csv",
+            delim = ",")
+
+##
+### KNN
+##
+
+knn_model <- nearest_neighbor(neighbors = tune()) |>
+  set_mode("classification") |>
+  set_engine("kknn")
+
+knn_wf <- workflow() |>
+  add_recipe(amazon_recipe) |>
+  add_model(knn_model)
+
+knn_grid_of_tuning_params <- grid_regular(
+  neighbors(range = c(1, 25)),
+  levels = 10
+)
+
+
+folds <- vfold_cv(amazon, v = 5, repeats = 1)
+
+knn_CV_results <- knn_wf |>
+  tune_grid(resamples = folds,
+            grid = knn_grid_of_tuning_params,
+            metrics = metric_set(roc_auc))
+
+knn_bestTune <- knn_CV_results |>
+  select_best(metric = "roc_auc")
+
+knn_final_wf <- knn_wf |>
+  finalize_workflow(knn_bestTune) |>
+  fit(data = amazon)
+
+knn_preds <- knn_final_wf |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(random_forest_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/knn.csv",
+            delim = ",")
