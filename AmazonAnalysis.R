@@ -9,6 +9,7 @@ library(dplyr)
 library(DataExplorer)
 library(corrplot)
 library(embed)
+library(discrim)
 
 # Read in test and training data
 amazon <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/train.csv") |>
@@ -37,8 +38,9 @@ plot_correlation(amazon)
 amazon_recipe <- recipe(ACTION ~ ., data = amazon) |>
   step_mutate_at(all_predictors(), fn = factor) |>
   step_other(all_nominal_predictors(), threshold = .001) |>
-  step_lencode_glm(all_nominal_predictors(), outcome = vars(ACTION)) |>
-  step_normalize(all_predictors())
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_predictors()) |>
+  step_pca(all_predictors(), threshold = .8)
 
 bake(prep(amazon_recipe), amazon)
 
@@ -68,7 +70,7 @@ kaggle_submission <- bind_cols(testData["Id"], logistic_predictions) |>
   select(Id, Action)
            
 vroom_write(kaggle_submission,
-            file = "~/Documents/STAT 348/AmazonEmployeeAccess/logistic_regression.csv",
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/logistic_regression_pca.csv",
             delim = ",")
 
 
@@ -109,7 +111,7 @@ penalized_preds <- penalized_final_wf |>
   select(id, ACTION)
 
 vroom_write(penalized_preds,
-            file = "~/Documents/STAT 348/AmazonEmployeeAccess/penalized_logistic.csv",
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/penalized_logistic_pca.csv",
             delim = ",")
 
 
@@ -154,7 +156,7 @@ random_forest_preds <- random_forest_final_wf |>
   select(id, ACTION)
 
 vroom_write(random_forest_preds,
-            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest.csv",
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest_pca.csv",
             delim = ",")
 
 ##
@@ -195,6 +197,103 @@ knn_preds <- knn_final_wf |>
   rename(ACTION = .pred_1) |>
   select(id, ACTION)
 
-vroom_write(random_forest_preds,
+vroom_write(knn_preds,
             file = "~/Documents/STAT 348/AmazonEmployeeAccess/knn.csv",
             delim = ",")
+
+
+## 
+### Naive Bayes
+## 
+
+nb_model <- naive_Bayes(Laplace = tune(), smoothness = tune()) |>
+  set_mode("classification") |>
+  set_engine("naivebayes")
+
+nb_wf <- workflow() |>
+  add_recipe(amazon_recipe) |>
+  add_model(nb_model)
+
+nb_grid_of_tuning_params <- grid_regular(
+  Laplace(range = c(0.001,2)),
+  smoothness(range = c(0.001,2)),
+  levels = 5
+)
+
+folds <- vfold_cv(amazon, v = 5, repeats = 1)
+
+nb_CV_results <- nb_wf |>
+  tune_grid(resamples = folds,
+            grid = nb_grid_of_tuning_params,
+            metrics = metric_set(roc_auc))
+
+nb_bestTune <- nb_CV_results |>
+  select_best(metric = "roc_auc")
+
+nb_final_wf <- nb_wf |>
+  finalize_workflow(nb_bestTune) |>
+  fit(data = amazon)
+
+nb_preds <- nb_final_wf |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(nb_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/nb.csv",
+            delim = ",")
+
+
+##
+### Neural Networks
+##
+
+nn_recipe <- recipe(ACTION ~ ., data = amazon) |>
+  step_mutate(across(where(is.character), as.factor)) |>
+  step_other(all_nominal_predictors(), threshold = .001) |>
+  step_lencode_glm(all_nominal_predictors(), outcome = vars(ACTION)) |>
+  step_normalize(all_predictors()) |>
+  step_range(all_numeric_predictors(), min = 0, max = 1)
+
+nn_model <- mlp(hidden_units = tune(),
+                epochs = 150) |>
+  set_engine("keras", verbose=0) |>
+  set_mode("classification")
+
+nn_wf <- workflow() |>
+  add_recipe(nn_recipe) |>
+  add_model(nn_model)
+
+
+nn_tuneGrid <- grid_regular(hidden_units(range = c(1, 17)),
+                            levels = 1)
+
+folds <- vfold_cv(amazon, v = 5)
+
+tuned_nn <- nn_wf |>
+  tune_grid(resamples = folds,
+            grid = nn_tuneGrid,
+            metrics = metric_set(roc_auc))
+
+nn_bestTune <- tuned_nn |>
+  select_best(metric = "roc_auc")
+
+nn_final_wf <- nn_wf |>
+  finalize_workflow(nn_bestTune) |>
+  fit(data = amazon)
+
+nn_preds <- nn_final_wf |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(nn_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/nn.csv",
+            delim = ",")
+
+tuned_nn |> collect_metrics() |>
+  filter(.metric == "roc_auc") |>
+  ggplot(aes(x = hidden_units, y = mean)) + 
+  geom_line()
