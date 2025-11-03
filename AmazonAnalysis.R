@@ -10,6 +10,8 @@ library(DataExplorer)
 library(corrplot)
 library(embed)
 library(discrim)
+library(kernlab)
+library(themis)
 
 # Read in test and training data
 amazon <- vroom("~/Documents/STAT 348/AmazonEmployeeAccess/archive/train.csv") |>
@@ -36,6 +38,11 @@ plot_correlation(amazon)
 ### Recipe
 ## Create a recipe that does dummy variable encoding for all nominal predictors
 amazon_recipe <- recipe(ACTION ~ ., data = amazon) |>
+  step_mutate_at(all_predictors(), fn = factor) |>
+  step_lencode_glm(all_nominal_predictors(), outcome = vars(ACTION)) |>
+  step_normalize(all_predictors())
+
+amazon_recipe_pca <- recipe(ACTION ~ ., data = amazon) |>
   step_mutate_at(all_predictors(), fn = factor) |>
   step_other(all_nominal_predictors(), threshold = .001) |>
   step_dummy(all_nominal_predictors()) |>
@@ -121,7 +128,7 @@ vroom_write(penalized_preds,
 
 random_forest_mod <- rand_forest(mtry = tune(),
                                  min_n = tune(),
-                                 trees = 500) |>
+                                 trees = 1000) |>
   set_engine("ranger") |>
   set_mode("classification")
 
@@ -156,7 +163,7 @@ random_forest_preds <- random_forest_final_wf |>
   select(id, ACTION)
 
 vroom_write(random_forest_preds,
-            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest_pca.csv",
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest_new.csv",
             delim = ",")
 
 ##
@@ -297,3 +304,136 @@ tuned_nn |> collect_metrics() |>
   filter(.metric == "roc_auc") |>
   ggplot(aes(x = hidden_units, y = mean)) + 
   geom_line()
+
+
+###
+#### SVM
+###
+amazon_recipe_svm <- recipe(ACTION ~ ., data = amazon) %>%
+  step_mutate_at(all_numeric_predictors(), fn = factor) %>%
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_pca(all_predictors(), threshold=0.99) %>%
+  step_downsample(ACTION)
+
+# SVM poly
+svm_poly_model <- svm_poly(degree = 1, cost = 0.0131) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_poly_wf <- 
+  workflow() %>%
+  add_model(svm_poly_model) %>%
+  add_recipe(amazon_recipe_svm)
+
+svm_poly_fit <- svm_poly_wf |>
+  fit(data = amazon)
+
+poly_preds <- svm_poly_fit |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(poly_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/svm_poly.csv",
+            delim = ",")
+
+# SVM Radial
+svmRadial <- svm_rbf(rbf_sigma = 0.177, cost = 0.00316) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+radial_wf <- workflow() |>
+  add_recipe(amazon_recipe_svm) |>
+  add_model(svmRadial)
+
+svm_radial_fit <- radial_wf |>
+  fit(data = amazon)
+
+radial_preds <- svm_radial_fit |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(radial_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/svm_radial.csv",
+            delim = ",")
+
+# SVM Linear
+svmLinear <- svm_linear(cost = 0.0131) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+linear_wf <- workflow() |>
+  add_recipe(amazon_recipe_svm) |>
+  add_model(svmLinear)
+
+svm_linear_fit <- linear_wf |>
+  fit(data = amazon)
+
+linear_preds <- svm_linear_fit |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(linear_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/svm_linear.csv",
+            delim = ",")
+
+
+###
+#### Balancing Data
+###
+
+smote_recipe <- recipe(ACTION ~ ., data=amazon) |>
+  step_mutate_at(all_predictors(), fn = factor) |>
+  step_other(all_nominal_predictors(), threshold = .001) |>
+  step_lencode_glm(all_nominal_predictors(), outcome = vars(ACTION)) |>
+  step_normalize(all_predictors()) |>
+  step_smote(all_outcomes(), neighbors=5)
+
+bake(prep(smote_recipe), amazon)
+
+random_forest_mod <- rand_forest(mtry = tune(),
+                                 min_n = tune(),
+                                 trees = 500) |>
+  set_engine("ranger") |>
+  set_mode("classification")
+
+random_forest_wf <- workflow() |>
+  add_recipe(smote_recipe) |>
+  add_model(random_forest_mod)
+
+random_forest_grid_of_tuning_params <- grid_regular(mtry(range = c(1, ncol(amazon) - 1)),
+                                                    min_n(),
+                                                    levels = 5)
+
+folds <- vfold_cv(amazon, v = 5, repeats = 1)
+
+random_forest_CV_results <- random_forest_wf |>
+  tune_grid(resamples = folds,
+            grid = random_forest_grid_of_tuning_params,
+            metrics = metric_set(roc_auc))
+
+random_forest_bestTune <- random_forest_CV_results |>
+  select_best(metric = "roc_auc")
+
+random_forest_final_wf <- random_forest_wf |>
+  finalize_workflow(random_forest_bestTune) |>
+  fit(data = amazon)
+
+random_forest_preds <- predict(random_forest_final_wf, new_data = testData)
+
+random_forest_preds <- random_forest_final_wf |>
+  predict(new_data = testData, type = "prob") |>
+  bind_cols(testData) |>
+  rename(ACTION = .pred_1) |>
+  select(id, ACTION)
+
+vroom_write(random_forest_preds,
+            file = "~/Documents/STAT 348/AmazonEmployeeAccess/random_forest_smote.csv",
+            delim = ",")
