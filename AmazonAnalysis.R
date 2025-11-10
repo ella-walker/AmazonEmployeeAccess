@@ -39,8 +39,9 @@ plot_correlation(amazon)
 ## Create a recipe that does dummy variable encoding for all nominal predictors
 amazon_recipe <- recipe(ACTION ~ ., data = amazon) |>
   step_mutate_at(all_predictors(), fn = factor) |>
-  step_lencode_glm(all_nominal_predictors(), outcome = vars(ACTION)) |>
+  step_lencode_bayes(all_nominal_predictors(), outcome = vars(ACTION)) |>
   step_normalize(all_predictors())
+juice(prep(amazon_recipe))
 
 amazon_recipe_pca <- recipe(ACTION ~ ., data = amazon) |>
   step_mutate_at(all_predictors(), fn = factor) |>
@@ -128,7 +129,7 @@ vroom_write(penalized_preds,
 
 random_forest_mod <- rand_forest(mtry = tune(),
                                  min_n = tune(),
-                                 trees = 1000) |>
+                                 trees = 500) |>
   set_engine("ranger") |>
   set_mode("classification")
 
